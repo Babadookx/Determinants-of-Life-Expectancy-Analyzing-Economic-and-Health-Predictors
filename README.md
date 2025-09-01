@@ -31,9 +31,6 @@ Determinants-of-Life-Expectancy-Analyzing-Economic-and-Health
 `Life_Expectancy_Analysis.html`: Rendered HTML report  
 `train.csv`: Training dataset  
 `test.csv`: Test dataset  
-`final_poster.pdf` *(optional)*: If you create a summary poster later  
-`outputs/`: Optional folder for plots/tables  
-`data/`: Optional folder for raw/processed data  
 
 ---
 
