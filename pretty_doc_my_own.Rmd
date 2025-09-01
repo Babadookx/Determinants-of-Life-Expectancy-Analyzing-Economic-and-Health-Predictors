@@ -1,0 +1,402 @@
+---
+title: "Determinants of Life Expectancy: Analyzing Economic and Health Predictors"
+author: "Jinyi Xue"
+date: "`r Sys.Date()`"
+output:
+  prettydoc::html_pretty:
+    theme: caymen
+    highlight: github
+---
+
+```{r setup, include=FALSE, warning=FALSE, message=FALSE}
+library(tableone)
+library(tidyverse)
+library(dplyr)
+library(alr4)
+library(GGally)
+library(broom)
+library(readxl)
+library(ggplot2)
+library(stats)
+library(ggcorrplot)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(pls)
+library(countrycode)
+library(ISLR2)
+library(tree)
+library(kableExtra)
+```
+
+## Introduction ##
+This study delves into life expectancy across different countries by utilizing a comprehensive dataset provided by the World Health Organization (WHO). The dataset includes a wide array of variables, such as economic factors and health-related statistics. By analyzing these predictors, we aim to understand the intricate relationships and key determinants that influence life expectancy.
+
+The significance of this analysis lies in its potential to inform public health policies and strategies aimed at improving life expectancy. Understanding which factors have the most substantial impact can help governments and organizations prioritize interventions and allocate resources more effectively to enhance the overall health and longevity of populations.
+
+```{r, include=FALSE}
+country <- read.csv("train.csv")
+test <-  read.csv("test.csv")
+country$Continent <- countrycode(country$Country, "country.name", "continent")
+country <- select(country, -("X"))
+
+columns_to_exclude <- c("Year", "Country") 
+
+test$Continent <- countrycode(test$Country, "country.name", "continent")
+tests <- select(test, -all_of(columns_to_exclude))
+tests <- select(tests, -("X"))
+
+```
+
+# Exploratory Data Analysis #
+
+```{r,include = FALSE}
+
+quant_life <- quantile(na.omit(country$Life.expectancy))
+
+country$Life_expectancy_level <- cut(
+  country$Life.expectancy,
+  breaks = c(36.3, 62.9, 71.8, 75.4, 89.0),
+  labels = c("Low", "Below_Average", "Average", "High"),
+  include.lowest = TRUE)
+
+countries <- select(country, -all_of(columns_to_exclude))
+
+tests$Life_expectancy_level <- cut(
+  tests$Life.expectancy,
+  breaks = c(36.3, 62.9, 71.8, 75.4, 89.0),
+  labels = c("Low", "Below_Average", "Average", "High"),
+  include.lowest = TRUE
+)
+
+myVars <- c("Life.expectancy", "Adult.Mortality", 
+"infant.deaths", "Alcohol", "percentage.expenditure", "Hepatitis.B", 
+"Measles", "BMI", "under.five.deaths", "Polio", "Total.expenditure", 
+"Diphtheria", "HIV.AIDS", "GDP", "Population", "thinness..1.19.years", 
+"thinness.5.9.years", "Income.composition.of.resources", "Schooling", "Status", "Continent" )
+
+non_N <- c("infant.deaths", "Alcohol", "percentage.expenditure", "Hepatitis.B", 
+"Measles",  "under.five.deaths", "Polio", 
+"Diphtheria", "HIV.AIDS", "GDP", "Population", "thinness..1.19.years", 
+"thinness.5.9.years", "Income.composition.of.resources", "Schooling", "Status", "Continent")
+
+tab <- CreateTableOne(vars = myVars, strata = "Life_expectancy_level" , data = countries)
+
+
+tableone <- print(tab, nonnormal = non_N, formatOptions = list(big.mark = " , "))
+
+```
+
+The descriptive statistics was summarized by life expectancy levels, divided by quantile value. Life expectancy ranged from **36.3 to 62.9** is classified as `Low`; between **62.9 to 71.8** is classified as `Below_Average`; from **71.8 to 75.4** belongs to `Average`; and life expectancy from **75.4 to 89.0** is defined as `High`. 
+
+Comparison between each level were conducted using *ANOVA* for normally distributed variables and *Kruskal-Wallis* test for non-normally distributed variables.
+
+```{r, echo=FALSE}
+tableone %>%
+  kbl() %>%
+  kable_classic_2(full_width = F)
+
+```
+
+From the table, each level contain similar amount of observations, minimized bias from different sample size. The p-value implies significant differences **(p < .001)** between each life expectancy level are present across all variables.
+
+```{r, fig.width=12, echo=FALSE}
+par(mfrow = c(2, 4), mar = c(4, 4, 2, 1))  
+simple_plot <- function(x, y, x_label, y_label = "Life Expectancy") {
+  plot(
+    x, y,
+    main = paste("Life Expectancy vs", x_label),
+    xlab = x_label,                              
+    ylab = y_label,                             
+    pch = 16,                                
+    col = "lightcoral"                                 
+  )
+}
+
+simple_plot(country$Alcohol, country$Life.expectancy, "Alcohol")
+simple_plot(country$HIV.AIDS, country$Life.expectancy, "HIV/AIDS")
+simple_plot(country$Hepatitis.B, country$Life.expectancy, "Hepatitis B")
+simple_plot(country$Measles, country$Life.expectancy, "Measles")
+simple_plot(country$BMI, country$Life.expectancy, "BMI")
+simple_plot(country$Polio, country$Life.expectancy, "Polio")
+simple_plot(country$Diphtheria, country$Life.expectancy, "Diphtheria")
+simple_plot(country$thinness..1.19.years, country$Life.expectancy, "Thinness (1-19 years)")
+```
+
+The scatter plots of different predictors on the x-axis and life expectancy on the y-axis indicate clear relationships between them. However, the plots also reveal that these relationships are mostly **non-linear**, as evidenced by *clusters* and *curved trends*. 
+
+```{r,echo = FALSE}
+
+numerical_data <- country[, sapply(country, is.numeric)]
+cor_matrix <- cor(numerical_data, use = "pairwise.complete.obs")
+ggcorrplot(cor_matrix)
+```
+
+The correlation matrix revealed that several predictors are strongly correlated with life expectancy, as well as with each other. For example, `life expectancy` is strongly correlated with `adult mortality`, `BMI`, the `five-year death rate`, `HIV/AIDS` prevalence, `schooling`, and the `income composition of resources`. Additionally, `schooling` and the `income composition of resources` are positively and strongly correlated with `GDP`. Conversely, `BMI` is strongly and negatively correlated with `thinness`.
+
+```{r, warning=FALSE, echo=FALSE}
+ggplot(countries, aes(x = Continent, y = Life.expectancy, fill = Status)) + geom_boxplot(alpha = 0.8, position = position_dodge(width = 0.8)) +
+  labs(title = "Distribution of Life Expectancy by Continent Time and Developed Status",
+       x = "Continents",
+       y = "Life Expectancy",
+       fill = "Developed Status")  + 
+  theme_minimal()
+
+```
+
+The boxplot illustrates that life expectancy varies significantly both across continents and within continents (between developed and developing countries). Except for Africa, which has no developed countries, within each continent, developed countries tend to have higher life expectancies compared to developing countries. The shape and length of the boxplots suggest that life expectancy differs greatly under various conditions and that its variance changes accordingly.
+
+## Methods Motivation ##
+
+In our study, we employ **tree classification** and **Partial Least Squares (PLS)** modeling to predict life expectancy.
+
+The tree classification method was chosen due to the observed *clusters* in the scatterplots. Besides its intuitive *interpretability*, making it ideal for identifying key determinants of life expectancy in a diverse dataset.
+Additionally, **PLS modeling** is particularly useful for dealing with *multicollinearity* among predictors, which is common in datasets with numerous interrelated variables. 
+
+By leveraging both methods, we aim to capture the intricate relationships within the data and enhance the robustness and accuracy of our predictions.
+
+## Tree Classification ##
+
+**Model Assumption**
+
+The decision tree model assumes that the training data is **representative** of the overall population and that the observed **patterns or clusters** in the data are consistent. It also assumes that the predictors are accurately measured and that any missing data has been properly handled, ensuring that the relationships between variables remain reliable for making predictions.
+
+
+```{r,echo = FALSE,fig.height=10, fig.width=12}
+tree_model <- rpart(
+  Life_expectancy_level ~ . -Life.expectancy,
+  data = countries,
+  method = "class",
+  control = rpart.control(minsplit = 5, minbucket = 3, maxdepth = 10, xval = 10)
+)
+
+rpart.plot(tree_model)
+
+```
+
+### Model Description ###
+
+The decision tree model was trained to predict life expectancy levels using various predictors. It splits data based on key factors like HIV/AIDS prevalence, income composition of resources, and adult mortality. Higher HIV/AIDS prevalence, for example, indicates lower life expectancy, especially in Africa and Oceania. The model identifies significant predictors and their interactions, highlighting the intricate relationships that influence life expectancy across regions.
+
+```{r, echo = FALSE}
+predictions <- predict(tree_model, tests, type = "class")
+mtx <- confusionMatrix(predictions, tests$Life_expectancy_level)
+mtx_all <- (mtx$overall)
+
+mtx_all %>%
+  kbl() %>%
+  kable_classic_2(full_width = F)
+```
+
+The **confusion matrix** shows an accuracy of approximately *78.5%*, with a Kappa statistic of 0.713, indicating substantial agreement between observed and predicted classifications. The accuracy lower and upper bounds range from 76.02% to 80.82%. The baseline accuracy, without any model, would be 27.59%, demonstrating that the model's performance is significantly better.
+
+## PLS Model ##
+
+**Mathematical Assumption**
+## PLS Model ##
+
+**Mathematical Assumption and Algorithm**
+
+The Partial Least Squares (PLS) regression identifies components \( Z_1, Z_2, \dots, Z_M \), which are linear combinations of the predictors \( X_1, X_2, \dots, X_P \), to maximize the covariance between the predictors and the response variable \( Y \). The model is given by:
+
+\[
+y_i = \theta_0 + \sum_{m=1}^M \theta_m Z_{m,i} + \varepsilon_i,
+\]
+
+where:
+
+- \( y_i \): The response variable (Life Expectancy) for observation \( i \),
+- \( \theta_0 \): The intercept term,
+- \( \theta_m \): Coefficients for the \( m \)-th component,
+- \( Z_{m,i} \): The \( m \)-th latent variable for observation \( i \),
+- \( \varepsilon_i \): Error term with zero mean.
+
+### PLS Component Construction
+
+**Standardization**: Standardize predictors \( X_{ij} \) and response \( y_i \):
+   \[
+   \tilde{x}_{ij} = \frac{x_{ij} - \bar{x}_j}{\sqrt{\frac{1}{n} \sum_{i=1}^n (x_{ij} - \bar{x}_j)^2}}, \quad \tilde{y}_i = \frac{y_i - \bar{y}}{\sqrt{\frac{1}{n} \sum_{i=1}^n (y_i - \bar{y})^2}}.
+   \]
+
+**First PLS Component \( Z_1 \)**:
+   - For each predictor \( X_p \), regress \( y \) onto \( X_p \) to estimate the slope \( \alpha_p \), which captures the correlation between \( y \) and \( X_p \).
+   \[
+   \alpha_p = \text{argmin}_{\alpha} \sum_{i=1}^n (y_i - \alpha X_{ip})^2.
+   \]
+   - Construct the first latent component as:
+   \[
+   Z_{1,i} = \sum_{p=1}^P \alpha_p X_{ip}, \quad i = 1, \dots, n.
+   \]
+
+**Subsequent Components \( Z_m \) for \( m \geq 2 \)**:
+   - Orthogonalize the predictors \( X \) with respect to the previous component \( Z_{m-1} \):
+   \[
+   X^{(m)} = X^{(m-1)} - Z_{m-1} \left(Z_{m-1}^\top Z_{m-1}\right)^{-1} Z_{m-1}^\top X^{(m-1)}.
+   \]
+   - For each updated predictor \( X^{(m)}_p \), regress \( y \) onto \( X^{(m)}_p \) to estimate the slope \( \alpha_p \).
+   \[
+   \alpha_p^{(m)} = \text{argmin}_{\alpha} \sum_{i=1}^n \left(y_i - \alpha X^{(m)}_{ip}\right)^2.
+   \]
+   - Construct the \( m \)-th latent component as:
+   \[
+   Z_{m,i} = \sum_{p=1}^P \alpha_p^{(m)} X_{ip}.
+   \]
+
+**Final Model**: The response \( Y \) is modeled as:
+   \[
+   y_i = \theta_0 + \sum_{m=1}^M \theta_m Z_{m,i} + \varepsilon_i,
+   \]
+   where the number of components \( M \) is determined via cross-validation by minimizing the Mean Squared Error of Prediction (MSEP).
+
+
+```{r, echo=FALSE}
+par(mfrow = c(1, 1))
+country_sub <- select(country,c("Status", "Life.expectancy", "Adult.Mortality", "infant.deaths", "Alcohol", "percentage.expenditure", "Hepatitis.B", "Measles", "BMI", "under.five.deaths", "Polio", "Total.expenditure", "Diphtheria", "HIV.AIDS", "GDP", "Population", "thinness..1.19.years", "thinness.5.9.years","Income.composition.of.resources", "Schooling", "Continent"))
+
+eco <- c( "Status","Life.expectancy","percentage.expenditure","Total.expenditure","Population","Income.composition.of.resources", "Schooling", "Continent", "GDP")
+
+econ <- c( "Status","percentage.expenditure","Total.expenditure","Population","Income.composition.of.resources", "Schooling", "Continent","GDP")
+
+country_eco <- select(country_sub, all_of(eco))
+country_dis <- select(country_sub, -all_of(econ)) 
+
+test_eco <- na.omit(select(tests, all_of(eco)))
+test_dis <- na.omit(select(tests, -all_of(econ)))
+
+
+numerical_data <- country_eco[, sapply(country_eco, is.numeric)]
+cor_matrix <- cor(numerical_data, use = "pairwise.complete.obs")
+ggcorrplot(cor_matrix)
+
+numerical_data <- country_dis[, sapply(country_dis, is.numeric)]
+cor_matrix <- cor(numerical_data, use = "pairwise.complete.obs")
+ggcorrplot(cor_matrix)
+```
+
+The factors are separated based on diseased factors and economic factors. Both correlation matrix confirmed that each either diseased factors and economic factors have strong correlation between predictors and response (Life Expectancy).
+
+
+```{r,echo=FALSE}
+eco <- na.omit(country_eco)
+disease <- na.omit(country_dis)
+
+# Scale and replace for eco
+numerical_eco <- eco[, sapply(eco, is.numeric)]
+numerical_eco <- select(numerical_eco, -("Life.expectancy"))
+numerical_eco <- scale(numerical_eco)
+eco[, colnames(numerical_eco)] <- numerical_eco
+
+# Scale and replace for disease
+numerical_disease <- disease[, sapply(disease, is.numeric)]
+numerical_disease <- select(numerical_disease, -("Life.expectancy"))
+numerical_disease <- scale(numerical_disease)
+disease[, colnames(numerical_disease)] <- numerical_disease
+
+# Scale and replace for test_eco
+numerical_test_eco <- test_eco[, sapply(test_eco, is.numeric)]
+numerical_test_eco <- select(numerical_test_eco, -("Life.expectancy"))
+numerical_test_eco <- scale(numerical_test_eco)
+test_eco[, colnames(numerical_test_eco)] <- numerical_test_eco
+
+# Scale and replace for test_dis
+numerical_test_dis <- test_dis[, sapply(test_dis, is.numeric)]
+numerical_test_dis <- select(numerical_test_dis, -("Life.expectancy"))
+numerical_test_dis <- scale(numerical_test_dis)
+test_dis[, colnames(numerical_test_dis)] <- numerical_test_dis
+```
+
+### Model Setup ###
+
+The economic and diseased factor models were fitted using Partial Least Squares (PLS) regression with cross-validation. The analysis aimed to predict life expectancy based on multiple economic and disease predictors, utilizing a kernel PLS algorithm with scaling of predictors. 
+
+### Economic Factor Model ###
+```{r,echo=FALSE}
+set.seed(613)
+pls_eco <- plsr(Life.expectancy ~ ., data =eco, scale = TRUE, validation = "CV")
+summary(pls_eco)
+validationplot(pls_eco, val.type = "MSEP")
+```
+
+**Model Description**
+
+The model stabilizes around **4-5 components**, with minimal improvements in prediction accuracy beyond this point. At 4 components, the cross-validated Root Mean Squared Error of Prediction (RMSEP) is 5.078, indicating the average prediction error in life expectancy years. 
+
+Regarding variance explanation, at 4 components, the X variables (predictors) explain 58.95% of the variance, while the life expectancy model explains 74.04% of the variance, suggesting a strong predictive capability.
+
+```{r,echo=FALSE}
+pred_eco <- predict(pls_eco, newdata = test_eco, ncomp = 4)
+
+pred_eco <- as.vector(pred_eco)
+
+# Evaluate RMSE for the final model
+eco_mse <- mean((pred_eco - test_eco$Life.expectancy)^2)
+eco_rmse <- sqrt(eco_mse)
+
+eco_mse
+eco_rmse
+```
+Using 4 components, the model was applied to the test dataset, resulting in a Mean Squared Error (MSE) of **23.712** and a Root Mean Squared Error (RMSE) of **4.870** years. The RMSE indicates that, on average, the model's predictions deviate by approximately **±4.870** years from the actual life expectancy. This suggests a reasonable level of predictive accuracy, though there is still notable variability in the predictions.
+
+### Diseased Factor Model ###
+```{r,echo=FALSE}
+set.seed(613)
+pls_dis <- plsr(Life.expectancy ~ ., data =disease, scale = TRUE, validation = "CV")
+summary(pls_dis)
+validationplot(pls_dis, val.type = "MSEP")
+```
+
+**Model Description**
+
+The Partial Least Squares (PLS) regression model for disease-related factors demonstrates a robust approach to predicting life expectancy. The model shows a gradual stabilization of predictive performance across components, with the most significant improvements occurring in the first few components. At **3 components**, the cross-validated Root Mean Squared Error of Prediction (RMSEP) is **4.597** years, representing the average prediction error.
+
+At 3 components, the disease predictors (X variables) explain 55.85% of the variance. The life expectancy model explains 71.13% of the variance, suggesting a strong predictive capability and a good model fit. This indicates that the selected disease-related variables capture a substantial proportion of the factors influencing life expectancy.
+
+```{r,echo=FALSE}
+pred_dis <- predict(pls_dis, newdata = test_dis, ncomp = 3)
+
+pred_dis <- as.vector(pred_dis)
+
+# Evaluate RMSE for the final model
+dis_mse <- mean((pred_dis - test_dis$Life.expectancy)^2)
+dis_rmse <- sqrt(dis_mse)
+
+dis_mse
+dis_rmse
+```
+Using 3 components, the model was applied to the test dataset, resulting in a Mean Squared Error (MSE) of **21.132** and a Root Mean Squared Error (RMSE) of **4.597** years. The RMSE indicates that, on average, the model's predictions deviate by approximately **±4.597** years from the actual life expectancy. This suggests a reasonable level of predictive accuracy, with performance comparable to the economic factors model.
+
+### Models Comparison ###
+```{r, echo = FALSE,fig.width=12}
+par(mfrow = c(1,2)) 
+
+plot(test_eco$Life.expectancy, pred_eco, 
+     main = "Economic Factors Predicted vs Actual Life Expectancy",
+     xlab = "Actual Life Expectancy",
+     ylab = "Predicted Life Expectancy",
+     pch = 16,
+     cex = 0.7,
+     col = "deepskyblue")
+abline(a = 0, b = 1, col = "coral2", lty = 2, , lwd = 3) 
+
+
+plot(test_dis$Life.expectancy, pred_dis, 
+     main = "Disease Factors Predicted vs Actual Life Expectancy",
+     xlab = "Actual Life Expectancy",
+     ylab = "Predicted Life Expectancy",
+     pch = 16,
+     cex = 0.7,
+     col = "lightcoral")
+abline(a = 0, b = 1, col ="deepskyblue" , lty = 2, lwd = 3) 
+```
+
+For both figures, data points are mostly clustered around the red/blue dashed line, which represents a perfect 1:1 relationship between predicted and actual values. This suggests that either the economic or diseased factors model is generally able to predict life expectancy fairly accurately, with the majority of predictions falling close to the actual values.
+
+However, the disease factors model shows slightly tighter clustering around the line compared to the economic factors model, suggesting lower overall prediction error.Additionally, the disease factors model appears to have particularly strong predictive accuracy for higher life expectancy values around 60~80 years.
+
+## Discussion ##
+
+In summary, the analysis explored the key determinants of life expectancy using economic and disease factors. The decision tree model identified important predictors like HIV/AIDS prevalence, income composition, and adult mortality as influential factors in determining life expectancy levels across regions. 
+
+The Partial Least Squares (PLS) regression models showed that both economic and disease-related factors are significant predictors of life expectancy, with the disease factors model exhibiting slightly stronger performance.
+
+These findings underscore the need for holistic, evidence-based policies that address the interconnected economic, social, and health-related determinants of longevity. Future research in this area could explore additional predictors, such as environmental factors, access to healthcare, and sociocultural norms, to develop a more comprehensive understanding of the drivers of life expectancy.
